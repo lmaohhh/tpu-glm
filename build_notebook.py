@@ -323,8 +323,9 @@ os.makedirs("/kaggle/tmp", exist_ok=True)
     code("""# ---- engine modules: pull from GitHub first, embedded fallback ----
 import os, sys, subprocess
 
-# weights source: gated orcarouter vision-uncensored variant when a token
-# exists, else the ungated deepseek-ai base (identical text weights)
+# weights source: cebeuq 0731 abliterated (UNGATED, agent-tuned, DSpark-capable)
+# is the default; deepseek-ai base as explicit fallback.  orcarouter only if
+# explicitly requested via DSV4_REPO + HF_TOKEN (gated, vision-model base).
 HF_TOKEN = None
 try:
     from kaggle_web_client import UserSecretClient
@@ -335,11 +336,10 @@ except Exception:
     if HF_TOKEN:
         print("HF token: from env")
 
-if HF_TOKEN:
-    os.environ["DSV4_REPO"] = \\
-        "orcarouter/DeepSeek-V4-Flash-Vision-Uncensored"
-else:
-    os.environ.setdefault("DSV4_REPO", "deepseek-ai/DeepSeek-V4-Flash")
+if not os.environ.get("DSV4_REPO"):
+    os.environ["DSV4_REPO"] = "cebeuq/DeepSeek-V4-Flash-0731-abliterated"
+# (explicit DSV4_REPO env always wins — e.g. orcarouter with HF_TOKEN,
+#  or deepseek-ai/DeepSeek-V4-Flash as the ungated base fallback)
 print("weights repo:", os.environ["DSV4_REPO"])
 
 try:
