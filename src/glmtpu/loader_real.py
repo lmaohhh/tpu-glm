@@ -29,7 +29,8 @@ import numpy as np
 from .config import GlmConfig
 from .fp8 import dequant_np
 
-REPO = "zai-org/GLM-5.3-Flash"
+REPO = os.environ.get("GLM_REPO", "zai-org/GLM-5.3-Flash")
+# override with the gated ab-literated variant via GLM_REPO + HF_TOKEN
 
 
 def _hdrs(token=None):
@@ -323,7 +324,11 @@ def finalize_experts(expert_host, cfg, log=print):
 
 def load_real(cfg: GlmConfig, d: int, token=None, log=print,
               workdir="/dev/shm/glmw", max_shards=None):
-    """Full load: returns (params_by_chip, embed, lm_head, expert_host)."""
+    """Full load: returns (params_by_chip, embed, lm_head, expert_host).
+    token: HF token for gated repos (orcarouter ab-literated variant)."""
+    import os as _os
+    if token is None:
+        token = _os.environ.get("HF_TOKEN") or None
     os.makedirs(workdir, exist_ok=True)
     idx_url = f"https://huggingface.co/{REPO}/resolve/main/model.safetensors.index.json"
     with urllib.request.urlopen(urllib.request.Request(idx_url, headers=_hdrs(token)),

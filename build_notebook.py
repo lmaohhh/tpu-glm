@@ -62,6 +62,24 @@ code("""# ---- engine modules: pull from GitHub, fall back to embedded copies --
 # (embedded MODS below stay in sync with the repo; git wins when reachable)
 import os, sys, subprocess
 
+# ---- weights source: orcarouter ab-literated (HF-gated) if a token exists ----
+# Token priority: Kaggle secret "HF_TOKEN" -> env HF_TOKEN -> none (zai base)
+HF_TOKEN = None
+try:
+    from kaggle_web_client import UserSecretClient
+    HF_TOKEN = UserSecretClient().get_secret("HF_TOKEN")
+    print("HF token: loaded from Kaggle secret")
+except Exception:
+    HF_TOKEN = os.environ.get("HF_TOKEN") or None
+    if HF_TOKEN:
+        print("HF token: from env")
+
+if HF_TOKEN:
+    os.environ["GLM_REPO"] = "orcarouter/GLM-5.3-Flash-Unc-ensored-FP8"
+else:
+    os.environ.setdefault("GLM_REPO", "zai-org/GLM-5.3-Flash")
+print("weights repo:", os.environ["GLM_REPO"])
+
 os.makedirs("/kaggle/tmp", exist_ok=True)
 try:
     subprocess.run(["git", "clone", "-q", "--depth", "1",
@@ -94,7 +112,7 @@ if "glmtpu" not in sys.modules:
 
 from glmtpu.config import GlmConfig
 import glmtpu.layers, glmtpu.runtime, glmtpu.loader_real
-print("engine modules ready")""")
+print("engine modules ready; loader repo =", glmtpu.loader_real.REPO)""")
 
 code("""# ---- engine self-test on the real TPU (fake weights, tiny config) ----
 import numpy as np
