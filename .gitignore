@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+nbtest/
+.ipynb_checkpoints/
+research/hf-search.json
+research/orcarouter-repos.json
