@@ -76,3 +76,30 @@ GLM5-next; the MoE bank machinery is reusable across all of them).
    non-text modalities, resumable shard downloads
 5. Optionally: D-Spark/DSA2 for the 34 KDA layers (replaces KDA; new
    pipeline)
+
+---
+
+## 4. Same-size SOTA survey (fills 330 GB RAM + 120 GiB HBM) — Sep 2026, all verified via Hub API
+
+Decode speed on this engine is governed by **top-k expert bytes/token** (RAM→HBM
+streaming) and port effort by architecture overlap with glm5_next.
+
+| Model | Disk | Experts | top-k | Expert MiB/tok | Port effort | Verdict |
+|---|---|---|---|---|---|---|
+| **GLM-5.3-Flash FP8** (current) | 306 GiB | 42×288 | 8 | 192 | — | running; highest ceiling |
+| **DeepSeek-V4-Flash FP8** | 149 GiB | 43×256 (**FP4 experts!**) | 6+1sh | 144 (FP4: ~72) | **low** — same DNA as glm5_next (mHC hc_mult=4, indexer top-512, DSA compress 4/128, MTP) | **best speed fit**: FP4 experts halve streaming; needs an FP4 dequant table (FP8 LUT → 4-bit LUT + scale layout) |
+| **Qwen3.8-Flash-Next FP8** | 173 GiB | 48×512 | 10 | 47 | medium — linear+full hybrid like ours, plus 51 GB n-gram dict (designed for RAM residency) | **cheapest decode** (47 MiB/tok = 4× less streaming); the n-gram dict = speculative drafts, big decode multiplier |
+| **MiniMax-M2.5 FP8** | 214 GiB | 62×256 | 8 | 108 | medium — standard MoE+full attention (no linear attn), gated FP8 blocks | solid all-rounder; NVFP4 variant 130 GiB |
+| GLM-5.3 full FP8 (dealignai UNCENSORED) | 791 GiB | — | — | — | low (same arch) | **too big** for 330 GB RAM even banked — needs NVFP4 (~400 GiB, still over) |
+| Kimi-K2.6 NVFP4 | 550 GiB | — | — | — | — | too big |
+| Qwen3.5-397B-A52B | ~400 GiB FP8 | — | 52B active | huge | — | too big + gated |
+
+**Recommendation order for this machine:**
+1. **Keep GLM-5.3-Flash** as primary (306 GiB fits with 24 GiB headroom).
+2. **Add DeepSeek-V4-Flash FP8 as the speed build** — same engine bones
+   (mHC + indexer + DSA + MTP all present), 149 GiB leaves 180 GiB headroom,
+   FP4 experts halve the streaming bytes.  Port = new config + FP4 dequant +
+   layer-math swap (closer to glm5_next than it looks).
+3. **Qwen3.8-Flash-Next** as the long-context champion (4× less expert
+   streaming, n-gram speculative decode) — port is bigger (n-gram dict
+   lookup + qwen4_exp linear attention variant).
