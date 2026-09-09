@@ -1,0 +1,8 @@
+cache_len: 16 16
+  ring: max|diff|=3.83e-01 BAD: int mismatch @layer 3
+  comp: max|diff|=2.19e-01 BAD: int mismatch @layer 3
+  idxr: max|diff|=1.00e+00 
+  cstate: max|diff|=3.87e-01 
+  icstate: max|diff|=2.57e-01 
+  mtp_ring: max|diff|=0.00e+00 
+DONE

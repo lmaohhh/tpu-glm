@@ -79,6 +79,22 @@ class Handler(BaseHTTPRequestHandler):
         stream = bool(body.get("stream", False))
         t0 = time.time()
         with _lock:
+            # over-context check BEFORE starting a stream (a 400 cannot be
+            # sent once SSE has begun) — mirrors the glue's ValueError path
+            try:
+                ids_probe = _model._encode(messages) \
+                    if hasattr(_model, "_encode") else None
+                if ids_probe is not None and \
+                        len(ids_probe) + max_tokens > _model.r.cfg.max_ctx:
+                    raise ValueError(
+                        f"context length exceeded ({len(ids_probe)} prompt "
+                        f"tokens + {max_tokens} max_tokens > max_ctx "
+                        f"{_model.r.cfg.max_ctx}); compact the conversation "
+                        "and retry")
+            except ValueError as e:
+                self._send_json(400, {"error": {"message": str(e),
+                                                "type": "invalid_request_error"}})
+                return
             if stream:
                 self._stream_chat(messages, max_tokens, temperature, top_p)
                 return

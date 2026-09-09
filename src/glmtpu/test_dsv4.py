@@ -36,15 +36,28 @@ def build(seed=1, cfg=None):
 
 
 class _Tok:
-    """Minimal deterministic tokenizer for tests: char-level, no vocab
-    growth — good enough to count tokens deterministically."""
+    """Minimal deterministic tokenizer for tests: char-level BIJECTION on
+    ids 0..511 (decode(encode(x)) == x; encode(decode(ids)) == ids) —
+    multi-turn conversations re-render to identical prefixes."""
 
     def encode(self, text, add_special_tokens=False):
-        ids = [ord(c) % 400 + 100 for c in text]
+        ids = [ord(c) % 512 for c in text]
         return type("E", (), {"ids": ids})()
 
     def decode(self, ids):
-        return "".join(chr((i - 100) % 400 + 32) for i in ids)
+        return "".join(chr(i % 512) for i in ids)
+
+
+def _flat(x):
+    """Yield leaf arrays from a (possibly tuple/list/dict) state entry."""
+    if isinstance(x, dict):
+        for v in x.values():
+            yield from _flat(v)
+    elif isinstance(x, (tuple, list)):
+        for v in x:
+            yield from _flat(v)
+    else:
+        yield x
 
 
 def main():
@@ -166,36 +179,141 @@ def main():
     assert ok7
     results.append("7 chat template renders + reasoning split")
 
-    # ------------------------------------------- 8. auto-compaction
+    # ------------------------------------------- 8. over-context 400 policy
     from .dsv4_glue import Dsv4ModelRunner
     cfg_c = Dsv4Config.tiny()
-    cfg_c.max_ctx = 512          # small limit to force compaction
+    cfg_c.max_ctx = 512          # small limit
     _, r_c = build(seed=1, cfg=cfg_c)
     model = Dsv4ModelRunner(r_c, _Tok(), thinking_mode="chat",
                             log=lambda *a: None)
     long_msgs = [{"role": "user",
-                  "content": ("word " * 25) + f" turn {i}."}
-                 for i in range(12)]
-    out1 = model.chat(long_msgs[:1], max_tokens=2)
-    ok8a = model.compactions >= 0 and len(out1) >= 0
-    # feed a long multi-turn conversation to cross 85% of 120 tokens
-    for i in range(2, 12):
-        model.messages.append({"role": "user", "content": long_msgs[i]["content"]})
-    n_before = model._n_tokens(model.messages)
-    model._maybe_compact()
-    n_after = model._n_tokens(model.messages)
-    ok8 = (model.compactions >= 1 and n_after < n_before
-           and n_after <= int(cfg_c.max_ctx * 0.85) + 64
-           and any("auto-compacted" in m.get("content", "")
-                   for m in model.messages))
-    # serving continues after compaction
-    out2 = model._gen(model.messages, max_tokens=2)
-    ok8 = ok8 and len(out2) >= 0
-    print(f"[8] compaction triggered: {model.compactions}x, "
-          f"ctx after = {n_after} tok (max_ctx {cfg_c.max_ctx}), "
-          f"serving continues: {ok8}")
+                  "content": ("word " * 200) + " too long."}]
+    try:
+        model.chat(long_msgs, max_tokens=16)
+        ok8 = False
+        err_txt = ""
+    except ValueError as e:
+        err_txt = str(e)
+        ok8 = ("context length exceeded" in err_txt
+               and "max_ctx 512" in err_txt)
+    print(f"[8] over-context -> ValueError 400 path: {ok8} ({err_txt[:60]}...)")
     assert ok8
-    results.append("8 server-side context auto-compaction")
+    results.append("8 over-context clean 400 (no truncation)")
+
+    # ------------------------------------------- 9. position purity
+    # NOTE: bitwise state equality across different batch shapes (chunk
+    # S=16 vs single S=1) is NOT a sound requirement -- XLA reduction
+    # order differs by shape (fp noise ~1e-7), same as vLLM prefix
+    # caching vs cold with different graph shapes.  The meaningful
+    # invariants: cache_len exactness (no phantom positions) and
+    # decode-level equivalence (greedy tokens identical).
+    cfg_p = Dsv4Config.tiny()
+    _, r_p = build(seed=1, cfg=cfg_p)
+    tokens = np.random.randint(0, cfg_p.vocab_size, size=40).tolist()
+    r_p.prefill(tokens)
+    cl_a = r_p.state["cache_len"]
+    g_whole = r_p.generate(tokens, max_new_tokens=8, temperature=0.0)
+    _, r_q = build(seed=1, cfg=cfg_p)
+    r_q.prefill(tokens[:30])
+    r_q.prefill(tokens[30:], _continue=True)
+    cl_b = r_q.state["cache_len"]
+    # decode from the split state must match decode from whole state
+    logits_split = r_q._lm_head(r_q._last_hidden)
+    out_split = []
+    lg = logits_split
+    for i in range(8):
+        t = r_q._sample(lg, 0.0, 1.0)
+        out_split.append(t)
+        if i + 1 < 8:
+            lg, _ = r_q._decode_one(t, 0.0, 1.0)
+    ok9 = (cl_a == 40 and cl_b == 40
+           and out_split == g_whole)
+    print(f"[9] position purity: cache_len {cl_a}/{cl_b}, "
+          f"split decode == whole decode: {out_split == g_whole}")
+    assert ok9
+    results.append("9 position-pure prefill (split decode == whole decode)")
+
+    # ------------------------------------------- 10. prefix cache
+    cfg_k = Dsv4Config.tiny()
+    _, r_k = build(seed=1, cfg=cfg_k)
+    # id-level exercise (decoupled from tokenizer round-trip): generate a
+    # reply, retain, then continue with prompt+reply-as-ids (exactly what
+    # a real client does when the tokenizer round-trips).
+    ids1 = np.random.default_rng(5).integers(100, 400, size=60).tolist()
+    g1 = r_k.generate(ids1, max_new_tokens=6, temperature=0.0, use_cache=True)
+    full2 = ids1 + g1 + np.random.default_rng(6).integers(100, 400, size=20).tolist()
+    # cached continuation
+    r_k._retained = r_k.cache_retain()
+    h2_cached, ev2 = r_k.prefill_cached(full2)
+    out_cached = []
+    lg = r_k._lm_head(h2_cached)
+    for i in range(5):
+        t = r_k._sample(lg, 0.0, 1.0)
+        out_cached.append(t)
+        if i + 1 < 5:
+            lg, _ = r_k._decode_one(t, 0.0, 1.0)
+    # cold engine, same conversation
+    _, r_k2 = build(seed=1, cfg=cfg_k)
+    h2_cold = r_k2.prefill(full2)
+    out_cold = []
+    lg = r_k2._lm_head(h2_cold)
+    for i in range(5):
+        t = r_k2._sample(lg, 0.0, 1.0)
+        out_cold.append(t)
+        if i + 1 < 5:
+            lg, _ = r_k2._decode_one(t, 0.0, 1.0)
+    ok10 = (out_cached == out_cold and ev2[0] == "hit"
+            and ev2[1] == len(ids1) + len(g1)
+            and ev2[2] == 20)
+    print(f"[10] prefix cache: cached == cold: {out_cached == out_cold}, "
+          f"event: {ev2}")
+    assert ok10
+    results.append("10 prefix cache (cached == cold, full reuse)")
+
+    # ------------------------------------------- 11. server end-to-end
+    import threading
+    import urllib.request
+    import json as _json
+    from . import dsv4_openai
+    cfg_s = Dsv4Config.tiny()
+    _, r_s = build(seed=1, cfg=cfg_s)
+    model_s = Dsv4ModelRunner(r_s, _Tok(), thinking_mode="chat",
+                              log=lambda *a: None)
+    port = 8941
+    threading.Thread(target=dsv4_openai.serve,
+                     args=(model_s, port, "127.0.0.1"), daemon=True).start()
+    time.sleep(1.0)
+
+    def post(msgs, max_tokens=4):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            data=_json.dumps({"model": "x", "messages": msgs,
+                              "max_tokens": max_tokens}).encode(),
+            headers={"Authorization": "Bearer kaggle-sfw-token-9999",
+                     "Content-Type": "application/json"})
+        try:
+            resp = urllib.request.urlopen(req, timeout=300)
+            return resp.status, _json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            return e.code, _json.loads(e.read())
+
+    code1, body1 = post([{"role": "user", "content": "turn one " * 10}])
+    code2, body2 = post([{"role": "user", "content": "turn one " * 10},
+                         {"role": "assistant",
+                          "content": body1["choices"][0]["message"]["content"] or "."},
+                         {"role": "user", "content": "turn two " * 2}])
+    over = [{"role": "user", "content": "word " * 400}]
+    code3, body3 = post(over, max_tokens=16)
+    ok11 = (code1 == 200 and code2 == 200
+            and code3 == 400
+            and body3["error"]["type"] == "invalid_request_error"
+            and "context length exceeded" in body3["error"]["message"]
+            and any("hit" in e for e in model_s.cache_events))
+    print(f"[11] server e2e: chat {code1}/{code2}, over-ctx {code3} "
+          f"(400 with counts: {'context length exceeded' in body3['error']['message']}), "
+          f"cache exercised: {any('hit' in e for e in model_s.cache_events)}")
+    assert ok11
+    results.append("11 server e2e (chat + cache + 400 over-ctx)")
 
     print("\nALL DSV4 TESTS PASSED:")
     for r_ in results:

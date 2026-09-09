@@ -1,0 +1,10 @@
+[cache] miss (cold): 0 reused, 65 new
+[gen] 4 tok in 7.6s
+out1: 'aðƐƉ'
+cache_events: ['[cache] miss (cold): 0 reused, 65 new']
+r._cache_ids len: 69 retained: True
+[cache] miss (diverged at 65/69): 0 reused, 133 new
+[gen] 4 tok in 1.1s
+out2: '\x88ƁƙƜ'
+cache_events: ['[cache] miss (cold): 0 reused, 65 new', '[cache] miss (diverged at 65/69): 0 reused, 133 new']
+DONE

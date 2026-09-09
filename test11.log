@@ -1,0 +1,28 @@
+[1] prefill 40 tok + 8 sampled decode: 11.1s, finite=True
+[2] greedy twice: True
+[3] starved=[86, 51, 293, 446, 384, 135, 21, 298]
+    full   =[86, 51, 293, 446, 384, 135, 21, 298]
+[4] MTP greedy == plain greedy: True (accepts=0, rejects=16)
+    forced verify predicate: accept(42)==argmax ✓, reject(7)!=argmax ✓
+[5] hash routing ids == tid2eid lookup: True
+[6] FP4 dequant jax==numpy: True, round-trip exact: True
+[7] chat encoding renders: True (prompt head: '<｜begin▁of▁sentence｜>You are a test assi'...)
+[8] over-context -> ValueError 400 path: True (context length exceeded (1052 prompt tokens + 16 max_tokens ...)
+[9] position purity: cache_len 40/40, split decode == whole decode: True
+[10] prefix cache: cached == cold: True, event: ('hit', 66, 20)
+[server] listening on http://127.0.0.1:8941/v1  (key: kaggle-s...)
+[11] server e2e: chat 200/200, over-ctx 400 (400 with counts: True), cache exercised: True
+
+ALL DSV4 TESTS PASSED:
+  ✓ 1 prefill+decode finite
+  ✓ 2 greedy determinism
+  ✓ 3 starved-bank == full-bank (fixpoint exact)
+  ✓ 4 MTP-1 lossless (accepts=0, rejects=16; predicate accept+reject forced)
+  ✓ 5 hash routing valid (== tid2eid)
+  ✓ 6 FP4 dequant exact (jax==numpy, idempotent)
+  ✓ 7 chat template renders + reasoning split
+  ✓ 8 over-context clean 400 (no truncation)
+  ✓ 9 position-pure prefill (split decode == whole decode)
+  ✓ 10 prefix cache (cached == cold, full reuse)
+  ✓ 11 server e2e (chat + cache + 400 over-ctx)
+EXIT=0

@@ -1,0 +1,7 @@
+[server] listening on http://127.0.0.1:8941/v1  (key: kaggle-s...)
+code1: 400
+body1 keys: ['error']
+body1: {"error": {"message": "context length exceeded (267 prompt tokens + 4 max_tokens > max_ctx 256); compact the conversation and retry", "type": "invalid_request_error"}}
+model cache_events: []
+retained ids len: None
+DONE

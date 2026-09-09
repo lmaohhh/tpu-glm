@@ -1,0 +1,5 @@
+turn1 prompt tokens: 180 -> rendered: 222
+turn2 prompt tokens: 293
+max_ctx=256; turn1+4max = 184  turn2+4max = 297
+LCP floor=64; retained after turn1 = rendered1 + gen(4) = 226
+DONE

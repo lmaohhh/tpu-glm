@@ -1,0 +1,19 @@
+L2 r=4: nonzero slots A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+L2 r=4: nonzero slots B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+   ring A rows nonzero: [0, 0, 0, 0, 0, 0, 0, 0]
+   ring B rows nonzero: [0, 0, 0, 0, 0, 0, 0, 0]
+L3 r=8: nonzero slots A=[0, 0, 0, 0, 0]
+L3 r=8: nonzero slots B=[0, 0, 0, 0, 0]
+   ring A rows nonzero: [0, 0, 0, 0, 0, 0, 0, 0]
+   ring B rows nonzero: [0, 0, 0, 0, 0, 0, 0, 0]
+L4 r=4: nonzero slots A=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+L4 r=4: nonzero slots B=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+   slot 0: 9 differing u8 bytes
+   ring A rows nonzero: [0, 0, 0, 0, 0, 0, 0, 0]
+   ring B rows nonzero: [0, 0, 0, 0, 0, 0, 0, 0]
+L5 r=8: nonzero slots A=[0, 0, 0, 0, 0]
+L5 r=8: nonzero slots B=[0, 0, 0, 0, 0]
+   slot 0: 8 differing u8 bytes
+   ring A rows nonzero: [0, 0, 0, 0, 0, 0, 0, 0]
+   ring B rows nonzero: [0, 0, 0, 0, 0, 0, 0, 0]
+DONE

@@ -1,0 +1,14 @@
+L0 ring equal: True
+L2 ring equal: False
+   differing idx count: 320 first: [(np.int64(0), np.int64(0), np.int64(0), np.int64(0)), (np.int64(0), np.int64(0), np.int64(0), np.int64(23)), (np.int64(0), np.int64(0), np.int64(0), np.int64(31)), (np.int64(0), np.int64(0), np.int64(0), np.int64(42)), (np.int64(0), np.int64(0), np.int64(0), np.int64(53))]
+   differing idx count: 496 first: [(np.int64(0), np.int64(0), np.int64(0), np.int64(1)), (np.int64(0), np.int64(0), np.int64(0), np.int64(4)), (np.int64(0), np.int64(0), np.int64(0), np.int64(6)), (np.int64(0), np.int64(0), np.int64(0), np.int64(8)), (np.int64(0), np.int64(0), np.int64(0), np.int64(10))]
+L2 comp equal: False
+   comp diff count: 144 at slots [0]
+   comp diff count: 248 at slots [0]
+L3 ring equal: False
+   differing idx count: 576 first: [(np.int64(0), np.int64(0), np.int64(0), np.int64(3)), (np.int64(0), np.int64(0), np.int64(0), np.int64(4)), (np.int64(0), np.int64(0), np.int64(0), np.int64(11)), (np.int64(0), np.int64(0), np.int64(0), np.int64(17)), (np.int64(0), np.int64(0), np.int64(0), np.int64(18))]
+   differing idx count: 640 first: [(np.int64(0), np.int64(0), np.int64(0), np.int64(2)), (np.int64(0), np.int64(0), np.int64(0), np.int64(3)), (np.int64(0), np.int64(0), np.int64(0), np.int64(4)), (np.int64(0), np.int64(0), np.int64(0), np.int64(5)), (np.int64(0), np.int64(0), np.int64(0), np.int64(6))]
+L3 comp equal: False
+   comp diff count: 128 at slots [0]
+   comp diff count: 128 at slots [0]
+DONE

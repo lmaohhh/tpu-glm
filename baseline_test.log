@@ -1,0 +1,20 @@
+[1] prefill 40 tok + 8 sampled decode: 10.9s, finite=True
+[2] greedy twice: True
+[3] starved=[117, 505, 100, 193, 373, 232, 355, 20]
+    full   =[117, 505, 100, 193, 373, 232, 355, 20]
+[4] MTP greedy == plain greedy: True (accepts=0, rejects=16)
+    forced verify predicate: accept(42)==argmax ✓, reject(7)!=argmax ✓
+[5] hash routing ids == tid2eid lookup: True
+[6] FP4 dequant jax==numpy: True, round-trip exact: True
+[7] chat encoding renders: True (prompt head: '<｜begin▁of▁sentence｜>You are a test assi'...)
+[8] compaction triggered: 1x, ctx after = 421 tok (max_ctx 512), serving continues: True
+
+ALL DSV4 TESTS PASSED:
+  ✓ 1 prefill+decode finite
+  ✓ 2 greedy determinism
+  ✓ 3 starved-bank == full-bank (fixpoint exact)
+  ✓ 4 MTP-1 lossless (accepts=0, rejects=16; predicate accept+reject forced)
+  ✓ 5 hash routing valid (== tid2eid)
+  ✓ 6 FP4 dequant exact (jax==numpy, idempotent)
+  ✓ 7 chat template renders + reasoning split
+  ✓ 8 server-side context auto-compaction

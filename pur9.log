@@ -1,0 +1,5 @@
+ring: max|diff|=1.00e+00
+Traceback (most recent call last):
+  File "<stdin>", line 20, in <module>
+TypeError: 'NoneType' object is not iterable
+DONE

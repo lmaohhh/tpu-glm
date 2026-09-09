@@ -1,0 +1,9 @@
+keys: ['cache_len', 'ring', 'comp', 'idxr', 'cstate', 'icstate', 'mtp_ring']
+  ring: max|diff|=2.22e+00 BAD: int mismatch
+  comp: max|diff|=3.42e+00 BAD: int mismatch
+  idxr: max|diff|=4.50e+00 
+  cstate: max|diff|=8.29e-01 
+  icstate: max|diff|=0.00e+00 
+  mtp_ring: max|diff|=0.00e+00 
+cache_len: 40
+DONE=0

@@ -1,0 +1,8 @@
+cache_len: 16 16
+  ring: max|diff|=1.97e-01 BAD: int mismatch
+  comp: max|diff|=1.48e-01 BAD: int mismatch
+  idxr: max|diff|=1.00e+00 
+  cstate: max|diff|=4.80e-02 BAD: shape (8, 1, 16, 80) vs (8, 1, 8, 80)
+  icstate: max|diff|=2.83e-01 
+  mtp_ring: max|diff|=0.00e+00 
+DONE

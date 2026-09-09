@@ -1,0 +1,8 @@
+cache_len: 40 40
+  ring: max|diff|=1.00e+00 @layer 5
+  comp: max|diff|=1.00e+00 @layer 4
+  idxr: max|diff|=0.00e+00 @layer None
+  cstate: max|diff|=1.69e-03 @layer 5
+  icstate: max|diff|=0.00e+00 @layer None
+  mtp_ring: max|diff|=0.00e+00 @layer None
+DONE

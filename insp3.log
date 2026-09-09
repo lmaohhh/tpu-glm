@@ -1,0 +1,10 @@
+pos 3 should=1.0 entry[:5]=[-0.19914804  0.04695466 -0.28254455  0.24852958 -0.20841518]
+pos 7 should=1.0 entry[:5]=[ 0.01854753 -0.25523844  0.595092   -0.72874945 -0.6389318 ]
+chunk  entry0[:5]: [-0.19914801  0.04695462 -0.2825446   0.24852954 -0.20841523]
+chunk  entry1[:5]: [ 0.01854782 -0.25523847  0.5950923  -0.7287494  -0.63893175]
+single pos3 == chunk entry0: True
+single pos7 == chunk entry1: True
+kv_state equal: True
+kv_state chunk[0,0:8:4,:5] nonzero rows: [0 1 2 3]
+kv_state single[0] nonzero rows: [0 1 2 3]
+DONE

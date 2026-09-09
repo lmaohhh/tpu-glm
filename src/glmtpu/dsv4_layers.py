@@ -304,11 +304,20 @@ def compressor_prefill(p, x, state, pos0, cfg):
     wts = jax.nn.softmax(slots_sc, axis=2)           # over slots
     entry = jnp.sum(slots_kv * wts, axis=2)          # [B,nw,d]
     entry = rms_norm(entry, p["norm"].astype(jnp.float32), cfg.rms_norm_eps)
-    # new state: last window full projection (kv/score incl. ape)
-    new_kv_state = jnp.concatenate(
-        [kvw[:, -1], jnp.zeros((B, ratio, coff * d), jnp.float32)], axis=1)
-    new_sc_state = jnp.concatenate(
-        [scw[:, -1], jnp.zeros((B, ratio, coff * d), jnp.float32)], axis=1)
+    # new state: last window full projection (kv/score incl. ape).
+    # Layout must match compressor_decode's expectation:
+    #   coff==2 (CSA): rows [0,ratio) = Ca of the last window,
+    #                  rows [ratio,2*ratio) = Cb of the window being
+    #                  built (empty after a boundary-aligned chunk).
+    #   coff==1 (HCA): exactly `ratio` rows (the last window).
+    if coff == 2:
+        new_kv_state = jnp.concatenate(
+            [kvw[:, -1], jnp.zeros((B, ratio, coff * d), jnp.float32)], axis=1)
+        new_sc_state = jnp.concatenate(
+            [scw[:, -1], jnp.zeros((B, ratio, coff * d), jnp.float32)], axis=1)
+    else:
+        new_kv_state = kvw[:, -1]
+        new_sc_state = scw[:, -1]
     return entry, (new_kv_state, new_sc_state)
 
 

@@ -1,0 +1,13 @@
+chunk entries [1,2,80]; single entries: (1, 8, 80)
+entry[0,1] chunk: [ 0.01854782 -0.25523847  0.5950923  -0.7287494  -0.63893175]
+entry[0,1] single: [-0. -0.  0.  0. -0.]
+Traceback (most recent call last):
+  File "<stdin>", line 30, in <module>
+  File "C:\Users\souffle\AppData\Local\hermes\hermes-agent\venv\Lib\site-packages\numpy\_core\numeric.py", line 2376, in allclose
+    res = all(isclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan))
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\souffle\AppData\Local\hermes\hermes-agent\venv\Lib\site-packages\numpy\_core\numeric.py", line 2507, in isclose
+    result = (less_equal(abs(x - y), atol + rtol * abs(y))
+                             ~~^~~
+ValueError: operands could not be broadcast together with shapes (1,2,80) (1,8,80) 
+DONE

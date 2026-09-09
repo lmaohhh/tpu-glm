@@ -1,12 +1,12 @@
 """ModelRunner glue for the DSV4 engine: tokenizer + chat encoding +
-server-side context auto-compaction.
+prefix caching.  Stateless: the client owns the conversation (and any
+compaction policy) — every request re-renders the full history, and the
+prefix cache makes that cheap (only NEW tokens are prefilled when the
+conversation extends the previous one verbatim).
 
-Auto-compaction (spec: prevents platform OOM at long conversations):
-when the rendered conversation crosses 85% of max_ctx, the OLDEST turns
-(keep a fixed watermark of the most recent messages) are summarized by
-the model itself (greedy = deterministic, chunked at 2000 tokens) and
-replaced with a single system summary message.  The client never sees
-it: the runner stores compacted history internally and serves from it.
+Context overflow: raises ValueError with exact counts -> HTTP 400.  The
+server never truncates, shifts, or compacts silently; the client app
+decides when to compact (mainstream-app behavior).
 """
 from __future__ import annotations
 
@@ -18,14 +18,11 @@ from . import dsv4_chat
 from .dsv4_config import Dsv4Config
 from .dsv4_runtime import Dsv4Runner
 
-COMPACT_FRAC = 0.85          # trigger threshold
-COMPACT_KEEP = 4             # watermark: messages kept verbatim
-COMPACT_CHUNK = 2000         # tokens per summarization chunk
-COMPACT_MAX_OUT = 200        # summary length cap (tokens)
+LCP_FLOOR = 64      # shorter common prefixes aren't worth trusting
 
 
 class Dsv4ModelRunner:
-    """openai_api.ModelRunner implementation over Dsv4Runner."""
+    """OpenAI-compatible ModelRunner over Dsv4Runner with prefix caching."""
 
     def __init__(self, runner: Dsv4Runner, tokenizer,
                  thinking_mode: str = "chat", log=print):
@@ -34,8 +31,7 @@ class Dsv4ModelRunner:
         self.thinking_mode = thinking_mode
         self.log = log
         self.eos = set(runner.cfg.eos_ids)
-        self.messages = []         # compacted conversation state
-        self.compactions = 0
+        self.cache_events = []      # last few cache log lines (debug)
 
     # ------------------------------------------------------------------
     def _encode(self, messages):
@@ -43,38 +39,63 @@ class Dsv4ModelRunner:
             messages, thinking_mode=self.thinking_mode,
             drop_thinking=True)
         enc = self.tok.encode(text, add_special_tokens=False)
-        ids = list(enc.ids) if hasattr(enc, "ids") else list(enc)
-        return ids
-
-    def _n_tokens(self, messages):
-        return len(self._encode(messages))
+        return list(enc.ids) if hasattr(enc, "ids") else list(enc)
 
     # ------------------------------------------------------------------
-    def _summarize(self, text: str, max_out=None) -> str:
-        """Deterministic greedy summarization via the model itself.
-        Chunked: long inputs are summarized piecewise, then combined."""
-        max_out = max_out or COMPACT_MAX_OUT
-        chunks = []
-        toks = self.tok.encode(text, add_special_tokens=False)
-        toks = list(toks.ids) if hasattr(toks, "ids") else list(toks)
-        pieces = [toks[i:i + COMPACT_CHUNK]
-                  for i in range(0, len(toks), COMPACT_CHUNK)]
-        for piece in pieces:
-            part = self.tok.decode(piece)
-            msgs = [{"role": "user",
-                     "content": "Summarize the following conversation "
-                     "turns in under "
-                     f"{max_out} tokens, preserving key facts, decisions "
-                     "and open tasks:\n\n" + part}]
-            out = self._gen(msgs, max_tokens=max_out, temperature=0.0)
-            chunks.append(out.strip())
-        return "\n".join(chunks)[-max_out * 4:]     # hard char cap
-
-    def _gen(self, messages, max_tokens=512, temperature=0.0, top_p=1.0,
-             stream_cb=None):
+    def chat(self, messages, max_tokens=512, temperature=0.0, top_p=1.0,
+             stream_cb=None, reasoning_effort=None):
+        if dsv4_chat._has_image_or_video(messages):
+            raise ValueError(
+                "image/video inputs are not supported by this engine "
+                "(vision tower weights are stripped at load; text-only "
+                "serving)")
         ids = self._encode(messages)
-        ids = ids[-(self.r.cfg.max_ctx - max_tokens - 8):]
-        logits = self.r.prefill(ids)
+        max_ctx = self.r.cfg.max_ctx
+        if len(ids) + max_tokens > max_ctx:
+            raise ValueError(
+                f"context length exceeded ({len(ids)} prompt tokens + "
+                f"{max_tokens} max_tokens > max_ctx {max_ctx}); compact "
+                "the conversation and retry")
+        t0 = time.time()
+
+        # ---- prefix-cache-aware generation ----
+        retained = getattr(self.r, "_retained", None)
+        cache_kind, reused, n_new = "miss (cold)", 0, len(ids)
+        if retained is not None:
+            old = retained["ids"]
+            lcp = 0
+            for a, b in zip(old, ids):
+                if a != b:
+                    break
+                lcp += 1
+            if lcp == len(old) and len(ids) > len(old) and lcp >= LCP_FLOOR:
+                cache_kind, reused, n_new = "hit", len(old), len(ids) - len(old)
+                self.r.cache_restore(retained)
+                h = self.r.prefill(ids[len(old):], _continue=True)
+                self.r._cache_ids = list(ids)
+            elif lcp == len(old) and len(ids) == len(old):
+                cache_kind, reused, n_new = "hit (identical)", len(old), 0
+                self.r.cache_restore(retained)
+                h = self.r._last_hidden
+            elif lcp >= LCP_FLOOR:
+                cache_kind = f"miss (diverged at {lcp}/{len(old)})"
+                h = self.r.prefill(ids)
+                self.r._cache_ids = list(ids)
+            else:
+                cache_kind = (f"miss (diverged at {lcp}/{len(old)})" if old
+                              else "miss (cold)")
+                h = self.r.prefill(ids)
+                self.r._cache_ids = list(ids)
+        else:
+            h = self.r.prefill(ids)
+            self.r._cache_ids = list(ids)
+
+        line = f"[cache] {cache_kind}: {reused} reused, {n_new} new"
+        self.cache_events.append(line)
+        self.cache_events = self.cache_events[-8:]
+        self.log(line)
+
+        logits = self.r._lm_head(h)
         out_ids = []
         det_text = ""
         for i in range(max_tokens):
@@ -89,80 +110,16 @@ class Dsv4ModelRunner:
                     det_text = piece
             if i + 1 < max_tokens:
                 logits, _ = self.r._decode_one(t, temperature, top_p)
+
+        # retain prompt + generated: state covers all of them
+        self.r._cache_ids = list(ids) + list(out_ids)
+        self.r._retained = self.r.cache_retain()
+
+        dt = time.time() - t0
+        self.log(f"[gen] {len(out_ids)} tok in {dt:.1f}s")
         return self.tok.decode(out_ids)
 
-    # ------------------------------------------------------------------
-    def _maybe_compact(self):
-        """Server-side auto-compaction: replace oldest turns with a model
-        summary when the conversation crosses 85% of max_ctx.  Iterative:
-        each pass shrinks the kept history and the summary budget until
-        the rendered conversation fits."""
-        for _ in range(8):
-            n = self._n_tokens(self.messages)
-            limit = int(self.r.cfg.max_ctx * COMPACT_FRAC)
-            if n <= limit or len(self.messages) <= 1:
-                return
-            keep_n = min(COMPACT_KEEP, len(self.messages) - 1)
-            keep = self.messages[-keep_n:] if keep_n else []
-            # shrink the watermark until the kept tail alone fits
-            while keep_n > 1 and self._n_tokens(keep) > limit - 64:
-                keep_n -= 1
-                keep = self.messages[-keep_n:]
-            old = self.messages[:-keep_n] if keep_n else self.messages
-            lines = []
-            for m in old:
-                c = m.get("content", "")
-                lines.append(f"{m.get('role', 'user')}: {c}")
-            text = "\n".join(lines)
-            budget = max(16, limit - self._n_tokens(keep) - 64)
-            summary = self._summarize(text, max_out=budget)
-            head = ("[Conversation summary (auto-compacted by the server "
-                    "to stay within the context window)]\n")
-            new_msgs = [{"role": "system", "content": head + summary}] + keep
-            # hard fit check: shrink the summary until it fits
-            while self._n_tokens(new_msgs) > limit and len(summary) > 16:
-                summary = summary[:max(16, len(summary) // 2)]
-                new_msgs = [{"role": "system",
-                             "content": head + summary}] + keep
-            self.messages = new_msgs
-            self.compactions += 1
-            self.log(f"[compact] {n} tok > {limit} ({COMPACT_FRAC:.0%} "
-                     f"of max_ctx) -> summarized {len(old)} oldest "
-                     f"messages ({self._n_tokens(self.messages)} tok "
-                     f"now, compaction #{self.compactions})")
-
-    # ------------------------------------------------------------------
-    def chat(self, messages, max_tokens=512, temperature=0.0, top_p=1.0,
-             stream_cb=None, reasoning_effort=None):
-        if dsv4_chat._has_image_or_video(messages):
-            raise ValueError(
-                "image/video inputs are not supported by this engine "
-                "(vision tower weights are stripped at load; text-only "
-                "serving)")
-        # append user turn to the compacted history
-        self.messages = self.messages + [dict(m) for m in messages
-                                         if m.get("role") == "user"] \
-            if not self._is_full_conversation(messages) else \
-            [dict(m) for m in messages]
-        self._maybe_compact()
-        t0 = time.time()
-        text = self._gen(self.messages, max_tokens=max_tokens,
-                         temperature=temperature, top_p=top_p,
-                         stream_cb=stream_cb)
-        # record the assistant reply in history
-        parsed = dsv4_chat.parse_message_from_completion_text(
-            text, self.thinking_mode)
-        self.messages.append(parsed)
-        dt = time.time() - t0
-        self.log(f"[gen] {len(text)} chars in {dt:.1f}s")
-        return text
-
-    @staticmethod
-    def _is_full_conversation(messages):
-        # clients that send the whole history each call (stateless use)
-        return len(messages) > 1
-
     def reset(self):
-        self.messages = []
-        self.compactions = 0
         self.r.reset()
+        self.r._cache_ids = []
+        self.r._retained = None

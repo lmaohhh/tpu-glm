@@ -72,9 +72,14 @@ def _attn_core(p, streams, valid, pos0, ring, cstate, comp, idxr, icstate,
     kv = dl.rms_norm(h @ p["wkv"].astype(jnp.bfloat16).T, p["kv_norm"],
                      cfg.rms_norm_eps)
     kv = dl.apply_rope(kv, pos, freqs)
+    # Quantize ONCE: the ring write and the in-call attention context both
+    # use the fp8-roundtripped values, so a token's contribution is
+    # identical whether it arrives inside a chunk or as a single step
+    # (position purity / prefix-cache exactness).
+    u8, sc, rp = dl.kv_pack(kv, cfg.rope_head_dim)
+    kv = dl.kv_unpack(u8, sc, rp)
 
     # ---- ring write (chunk's last min(S, W) tokens) ----
-    u8, sc, rp = dl.kv_pack(kv, cfg.rope_head_dim)
     n_write = min(S, W)
     u8w, scw = u8[:, -n_write:], sc[:, -n_write:]
     rpw = rp[:, -n_write:]
@@ -104,20 +109,41 @@ def _attn_core(p, streams, valid, pos0, ring, cstate, comp, idxr, icstate,
         if S == 1:
             ent, should, (nk, ns) = dl.compressor_decode(
                 p["comp"], h, cstate, pos0, cfg)
+            # write the comp cache ONLY at actual window boundaries:
+            # should==0 entries are placeholders and would otherwise
+            # zero-overwrite the boundary entry already stored at slot
+            # pos0//ratio (breaks position purity between chunk paths).
+            ent_r = dl.apply_rope(ent, (pos0 // ratio)[None] * ratio, cf)
+            cu8, csc, crp = dl.kv_pack(ent_r, cfg.rope_head_dim)
+            # gate by masking: at non-boundaries write back the EXISTING
+            # slot contents (identity), at boundaries the new packed values
+            e0 = pos0 // ratio
+            old_u8 = lax.dynamic_slice(comp[0], (0, e0, 0),
+                                       (comp[0].shape[0], 1, comp[0].shape[2]))
+            old_s = lax.dynamic_slice(comp[1], (0, e0, 0),
+                                       (comp[1].shape[0], 1, comp[1].shape[2]))
+            old_r = lax.dynamic_slice(comp[2], (0, e0, 0),
+                                       (comp[2].shape[0], 1, comp[2].shape[2]))
+            sel_u8 = jnp.where(should > 0.5, cu8, old_u8)
+            sel_s = jnp.where(should > 0.5, csc, old_s)
+            sel_r = jnp.where(should > 0.5, crp.astype(jnp.float32), old_r)
+            c_u8 = lax.dynamic_update_slice(comp[0], sel_u8, (0, e0, 0))
+            c_s = lax.dynamic_update_slice(comp[1], sel_s, (0, e0, 0))
+            c_r = lax.dynamic_update_slice(comp[2], sel_r, (0, e0, 0))
             n_new = 1
         else:
             ent, (nk, ns) = dl.compressor_prefill(
                 p["comp"], h, cstate, pos0, cfg)
             n_new = ent.shape[1]
-        # compressed-entry positions: e*ratio for the n_new new entries
-        cpos = (pos0 // ratio + jnp.arange(n_new)) * ratio
-        ent = dl.apply_rope(ent, cpos, cf)
-        e0 = pos0 // ratio
-        cu8, csc, crp = dl.kv_pack(ent, cfg.rope_head_dim)
-        c_u8 = lax.dynamic_update_slice(comp[0], cu8, (0, e0, 0))
-        c_s = lax.dynamic_update_slice(comp[1], csc, (0, e0, 0))
-        c_r = lax.dynamic_update_slice(
-            comp[2], crp.astype(jnp.float32), (0, e0, 0))
+            # compressed-entry positions: e*ratio for the n_new entries
+            cpos = (pos0 // ratio + jnp.arange(n_new)) * ratio
+            ent = dl.apply_rope(ent, cpos, cf)
+            e0 = pos0 // ratio
+            cu8, csc, crp = dl.kv_pack(ent, cfg.rope_head_dim)
+            c_u8 = lax.dynamic_update_slice(comp[0], cu8, (0, e0, 0))
+            c_s = lax.dynamic_update_slice(comp[1], csc, (0, e0, 0))
+            c_r = lax.dynamic_update_slice(
+                comp[2], crp.astype(jnp.float32), (0, e0, 0))
         comp_kv = dl.kv_unpack(c_u8, c_s, c_r)          # [B,C,dh]
         comp_idx = jnp.arange(comp_kv.shape[1])
         cnk, cns = nk, ns
@@ -129,17 +155,32 @@ def _attn_core(p, streams, valid, pos0, ring, cstate, comp, idxr, icstate,
                 ient, ish, (ink, ins) = dl.compressor_decode(
                     p["icomp"], h, icstate, pos0, cfg)
                 n_in = 1
+                # boundary-gate the indexer-cache write (same rationale as
+                # the comp cache: non-boundary placeholders must not
+                # overwrite the stored boundary key)
+                ih_ent = dl.apply_rope(
+                    ient, (pos0 // ratio)[None] * ratio, cf)
+                ih = dl.hadamard(ih_ent)
+                ihq = fp4_sim_jax(ih.astype(jnp.float32), 32)
+                i0 = pos0 // ratio
+                old_k = lax.dynamic_slice(
+                    idxr, (0, i0, 0),
+                    (idxr.shape[0], 1, idxr.shape[2]))
+                sel_k = jnp.where(ish > 0.5,
+                                  ihq.astype(jnp.float32), old_k)
+                idx_new = lax.dynamic_update_slice(
+                    idxr, sel_k, (0, i0, 0))
             else:
                 ient, (ink, ins) = dl.compressor_prefill(
                     p["icomp"], h, icstate, pos0, cfg)
                 n_in = ient.shape[1]
-            ipos = (pos0 // ratio + jnp.arange(n_in)) * ratio
-            ient = dl.apply_rope(ient, ipos, cf)
-            ih = dl.hadamard(ient)
-            ihq = fp4_sim_jax(ih.astype(jnp.float32), 32)
-            i0 = pos0 // ratio
-            idx_new = lax.dynamic_update_slice(
-                idxr, ihq.astype(jnp.float32), (0, i0, 0))
+                ipos = (pos0 // ratio + jnp.arange(n_in)) * ratio
+                ient = dl.apply_rope(ient, ipos, cf)
+                ih = dl.hadamard(ient)
+                ihq = fp4_sim_jax(ih.astype(jnp.float32), 32)
+                i0 = pos0 // ratio
+                idx_new = lax.dynamic_update_slice(
+                    idxr, ihq.astype(jnp.float32), (0, i0, 0))
             iscores = _indexer_scores(
                 p["idx"], qr, h, idx_new, pos0, cfg, d, cf)
             thr = (pos[:, None] + 1) // ratio
@@ -181,7 +222,18 @@ def _attn_core(p, streams, valid, pos0, ring, cstate, comp, idxr, icstate,
     pk = pos_sel[None, :]                              # [1,N]
     causal = pk <= pq                                  # [S,N]
     in_win = (pk > pq - W) & (pk >= 0)
-    vis = jnp.where(is_comp[None, :], causal, causal & in_win)
+    if ratio:
+        # SPEC causality for compressed entries (R3 causal_threshold):
+        # entry e is visible to query t iff e < (t+1)//ratio — an entry
+        # whose window still covers tokens > t must NOT be visible.
+        # Applied to compressed entries only; window entries keep the
+        # plain causal+window rule.  (comp_causal is [S,N]; is_comp is
+        # [N] -> combined directly, no extra query axis.)
+        e_idx = jnp.arange(N)[None, :]                 # [1,N]
+        comp_causal = e_idx < ((pos[:, None] + 1) // ratio)   # [S,N]
+        vis = jnp.where(is_comp[None, :], comp_causal, causal & in_win)
+    else:
+        vis = causal & in_win
     valid_ctx = jnp.broadcast_to(vis[None], (B, S, N))
 
     o = dl.sparse_attn_core(q, kv_sel, valid_ctx.astype(jnp.float32),
@@ -264,6 +316,8 @@ class Dsv4Runner:
         self.banks = {}
         self.bank_ids = {}
         self._last_routed = {}
+        self._cache_ids = []
+        self._retained = None
         self._build_freqs()
         _INDEX_FREQS = self.cf
         self.state = self._init_state()
@@ -573,34 +627,122 @@ class Dsv4Runner:
         return jax.device_put(np.stack([streams] * self.d),
                               self.sharding_tp)
 
-    def prefill(self, tokens):
+    def prefill(self, tokens, _continue=False):
+        """Position-pure prefill: state is a pure function of the token
+        prefix (required for prefix caching).  NO PADDING ever.
+
+        Discipline (per continuous run of tokens from cache_len):
+          - while >= prefill_chunk tokens remain AND cache_len is aligned
+            (cache_len % prefill_chunk == 0): take a full chunk through
+            the vectorized path (compressor_prefill requires pos0 %
+            ratio == 0 for every ratio; prefill_chunk is a multiple of
+            all ratios so base-aligned full chunks are always safe).
+          - otherwise: advance ONE token at a time via the decode-style
+            path (compressor_decode / ring single write) until the next
+            alignment boundary or the end.
+        cache_len advances by exactly len(tokens); split prefill
+        A-then-B yields bit-identical state to whole-prefill.
+        """
         cfg = self.cfg
-        self.reset()
+        if not _continue:
+            self.reset()
         S = cfg.prefill_chunk
         n = len(tokens)
-        pad = (-n) % S
-        toks = [0] * pad + list(tokens)
-        pos0 = 0
+        if n == 0:
+            return self._last_hidden
+        i = 0
         last_hidden = None
-        for ci in range(0, len(toks), S):
-            chunk = toks[ci:ci + S]
-            n_real = min(S, n - (ci - pad))
-            valid_l = [0.0] * (S - n_real) + [1.0] * n_real
-            streams = self._embed_streams(chunk, valid_l)
-            valid = self._sh(np.asarray(valid_l, np.float32).reshape(1, S))
-            ids = self._sh(np.asarray(chunk, np.int32).reshape(1, S))
-            for l in range(cfg.n_layers):
-                streams = self._attn_call(l, streams, valid, pos0)
-                streams, routed = self._prefill_moe(l, streams, ids)
-                self._last_routed[l] = _dg(routed[0])
-            h = self._final(streams)
-            last_hidden = _dg(h[0, 0, -1])
-            self.state["cache_len"] += n_real
-            pos0 += n_real
+        while i < n:
+            pos = self.state["cache_len"]
+            rem = n - i
+            if rem >= S and pos % S == 0:
+                # full aligned chunk -> vectorized path
+                chunk = tokens[i:i + S]
+                streams = self._embed_streams(chunk, [1.0] * S)
+                valid = self._sh(np.ones((1, S), np.float32))
+                ids = self._sh(np.asarray(chunk, np.int32).reshape(1, S))
+                for l in range(cfg.n_layers):
+                    streams = self._attn_call(l, streams, valid, pos)
+                    streams, routed = self._prefill_moe(l, streams, ids)
+                    self._last_routed[l] = _dg(routed[0])
+                h = self._final(streams)
+                last_hidden = _dg(h[0, 0, -1])
+                self.state["cache_len"] = pos + S
+                i += S
+            else:
+                # alignment gap or tail: single-token decode-style step
+                # (MoE via the exact sweep too — bank contents during
+                # prefill are stale, only _prefill_moe is bank-agnostic)
+                tok = tokens[i]
+                streams = self._embed_streams([tok], [1.0])
+                valid = self._sh(np.ones((1, 1), np.float32))
+                ids = self._sh(np.asarray([[tok]], np.int32))
+                for l in range(cfg.n_layers):
+                    streams = self._attn_call(l, streams, valid, pos)
+                    streams, routed = self._prefill_moe(l, streams, ids)
+                    self._last_routed[l] = _dg(routed[0])
+                h = self._final(streams)
+                last_hidden = _dg(h[0, 0, 0])
+                self.state["cache_len"] = pos + 1
+                i += 1
         self._last_hidden = last_hidden
         self._last_streams = streams
         self._refresh_all_banks_for_decode()
         return last_hidden
+
+    # --------------------------------------------------------- cache
+    def cache_retain(self):
+        """Snapshot for prefix caching: (token ids, state, streams, logits
+        hidden).  Arrays are immutable jax results — retention is free."""
+        return {
+            "ids": list(self._cache_ids),
+            "state": {k: (list(v) if isinstance(v, list) else v)
+                      for k, v in self.state.items()},
+            "streams": self._last_streams,
+            "hidden": self._last_hidden,
+        }
+
+    def cache_restore(self, snap):
+        self.state = {k: (list(v) if isinstance(v, list) else v)
+                      for k, v in snap["state"].items()}
+        self._last_streams = snap["streams"]
+        self._last_hidden = snap["hidden"]
+
+    def prefill_cached(self, tokens):
+        """Prefix-cache-aware prefill.  Requires cache_retain() called
+        after the previous generation and ids tracked (see generate*)."""
+        snap = getattr(self, "_retained", None)
+        if snap is None or snap["ids"] is None:
+            self._cache_ids = list(tokens)
+            self._retained = None
+            return self.prefill(tokens), ("miss (cold)", 0, len(tokens))
+        old = snap["ids"]
+        n_old, n_new = len(old), len(tokens)
+        # longest common prefix
+        lcp = 0
+        for a, b in zip(old, tokens):
+            if a != b:
+                break
+            lcp += 1
+        if lcp == n_old and n_new > n_old:
+            # golden path: exact extension -> continue from live state
+            self.cache_restore(snap)
+            new_tokens = tokens[n_old:]
+            h = self.prefill(new_tokens, _continue=True)
+            self._cache_ids = list(tokens)
+            return h, ("hit", n_old, n_new - n_old)
+        if lcp == n_old and n_new == n_old:
+            # identical re-request: state already covers the prompt
+            self.cache_restore(snap)
+            self._cache_ids = list(tokens)
+            return self._last_hidden, ("hit (identical)", n_old, 0)
+        # divergence: full re-prefill (post-compaction case)
+        self._cache_ids = list(tokens)
+        h = self.prefill(tokens)
+        return h, (f"miss (diverged at {lcp}/{n_old})", 0, n_new)
+
+    def cache_note(self, prev):
+        self._retained = prev if prev is not None else self.cache_retain()
 
     def _prefill_moe(self, l, streams, ids):
         """Exact MoE during prefill via the affine-correction sweep
@@ -759,8 +901,12 @@ class Dsv4Runner:
 
     # ------------------------------------------------------------- gen
     def generate(self, tokens, max_new_tokens=64, temperature=0.0,
-                 top_p=1.0, stop_ids=None, on_token=None):
-        h = self.prefill(tokens)
+                 top_p=1.0, stop_ids=None, on_token=None, use_cache=False):
+        if use_cache:
+            h, _ = self.prefill_cached(tokens)
+        else:
+            self._cache_ids = list(tokens)
+            h = self.prefill(tokens)
         logits = self._lm_head(h)
         out = []
         for i in range(max_new_tokens):
@@ -772,14 +918,22 @@ class Dsv4Runner:
                 on_token(t)
             if i + 1 < max_new_tokens:
                 logits, _ = self._decode_one(t, temperature, top_p)
+        if use_cache:
+            # retained ids = prompt + generated (state covers all of them)
+            self._cache_ids = list(tokens) + list(out)
         return out
 
     def generate_mtp(self, tokens, max_new_tokens=64, temperature=0.0,
-                     top_p=1.0, stop_ids=None, on_token=None, stats=None):
+                     top_p=1.0, stop_ids=None, on_token=None, stats=None,
+                     use_cache=False):
         """MTP-1 speculative decode.  Greedy path is lossless: emits
         a=argmax(target L) always, plus d when the draft's d equals the
         target's next argmax (verified by the target step on a)."""
-        h = self.prefill(tokens)
+        if use_cache:
+            h, _ = self.prefill_cached(tokens)
+        else:
+            self._cache_ids = list(tokens)
+            h = self.prefill(tokens)
         logits = self._lm_head(h)
         streams = self._last_streams
         out = []
@@ -812,6 +966,9 @@ class Dsv4Runner:
                 n_rej += 1
         if stats is not None:
             stats.update({"accepts": n_acc, "rejects": n_rej})
+        if use_cache:
+            self._cache_ids = list(tokens) + list(out)
+            self._retained = self.cache_retain()
         return out
 
     def _sample(self, logits, temperature, top_p):

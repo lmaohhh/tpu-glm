@@ -1,0 +1,9 @@
+tiny: Dc=80 rd=16 W=8 ratios=(0, 0, 4, 8, 4, 8, 0)
+prefill(8 tok): (1, 2, 80) state: (1, 8, 160)
+Traceback (most recent call last):
+  File "<stdin>", line 28, in <module>
+  File "D:\tpu-glm\src\glmtpu\dsv4_layers.py", line 343, in compressor_decode
+    should = ((pos + 1) % ratio == 0).astype(jnp.float32)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'bool' object has no attribute 'astype'
+DONE

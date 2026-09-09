@@ -403,8 +403,13 @@ from glmtpu.dsv4_config import Dsv4Config
 from glmtpu.dsv4_loader import load_real
 from glmtpu.dsv4_runtime import Dsv4Runner
 
+# Context window: 256k default.  Supported max 1048576 (1M) — KV math:
+# ~3.3-3.7 GiB total at 1M (CSA compressed caches + FP8 indexer keys),
+# fits comfortably next to the expert banks.
+MAX_CTX = 262144
+
 t0 = time.time()
-cfg = Dsv4Config.real(max_ctx=262144)   # 256k default context
+cfg = Dsv4Config.real(max_ctx=MAX_CTX)
 cfg.n_slots = 8                         # hot fp4 experts per chip/layer
 params_by_chip, embed, lm_head, expert_host = load_real(
     cfg, d=8, log=print, workdir="/dev/shm/dsv4w")
